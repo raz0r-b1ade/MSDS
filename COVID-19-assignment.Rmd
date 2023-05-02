@@ -1,0 +1,210 @@
+---
+title: "COVID-19 assignment"
+author: "Roman N."
+date: "2023-05-02"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+In this Rmd document we're analyzing the COVID-19 ISSUES, which can be obtained from the following link: [Covid-19 Dataset](https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/).
+
+# Load Libraries and Import Data
+
+Note: You should use install.packages() of some of the libraries before using them.
+
+**1. Loading libraries**
+
+```{R}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(sp)
+library(rgdal)
+library(spatialEco)
+library(tidyr)
+library(leaflet)
+library(leaflet.extras)
+library(sf)
+```
+
+**2. Reading the dataset from CSV file**
+
+```{R}
+confirmed_US <- read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv")
+
+confirmed_global <- read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv")
+
+deaths_US <- read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv")
+
+deaths_global <- read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv")
+```
+
+# Data wrangling
+
+Pivot the data to the long format avoiding a huge quantity of columns.
+
+```{R}
+confirmed_global_long <- confirmed_global %>%
+  pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long),
+               names_to = "date",
+               values_to = "cases")
+deaths_global_long <- deaths_global %>%
+  pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long),
+               names_to = "date",
+               values_to = "deaths")
+```
+
+Then merge dataframes with the same type of data to the one by using full_join().
+
+```{R}
+global <- confirmed_global_long %>%
+      full_join(deaths_global_long) %>%
+      rename(country_region = 'Country/Region', 
+      province_state = 'Province/State') %>%
+      select(c(country_region, province_state, date, cases, deaths, Lat, Long))
+```
+
+After that convert formats to the appropriate ones
+
+```{R}
+global$date <- as.Date(global$date, format = "%m/%d/%y")
+global$cases <- as.integer(global$cases)
+global$deaths <- as.integer(global$deaths)
+```
+
+# Check for missing data and handling it out
+
+```{R}
+colSums(is.na(global))
+```
+
+There are missing values in province_state column and geospatial coordinates. Unfortunately we can't use such rows for geospatial analysis, but the quantity of them is insignificant so we can remove them. For province_state column we can just replace n/a with None.
+
+```{R}
+global <- global[complete.cases(select(global, Lat, Long)), ]
+global$province_state <- replace(global$province_state, is.na(global$province_state), "None")
+```
+
+# Data summary
+
+```{R}
+colSums(is.na(global))
+summary(global)
+```
+
+# Geospatial and other visualization
+
+Let's put all of the cases and deaths on the map
+
+Geospatial visualization with clusters can be a powerful tool for analyzing and understanding patterns in the data related to COVID-19 cases and deaths. By plotting the data points on a map and applying clustering algorithms, we can identify regions with higher or lower rates of cases and deaths.
+
+Cluster analysis can also help to identify potential hotspots for COVID-19 transmission, which could be useful for public health officials in planning targeted interventions to control the spread of the virus.
+
+```{R}
+# Create a spatial data frame with the latitude and longitude coordinates
+global_sf <- st_as_sf(global, coords = c("Long", "Lat"), crs = st_crs(4326))
+
+# Create the map with marker clusters
+leaflet(global_sf) %>%
+  addTiles() %>%
+  addMarkers(clusterOptions = markerClusterOptions(),
+             popup = paste("<b>Country/Region:</b>", global_sf$country_region, "<br>",
+                           "<b>Date:</b>", format(as.Date(global_sf$date), "%d %b %Y"), "<br>",
+                           "<b>Cases:</b>", global_sf$cases, "<br>",
+                           "<b>Deaths:</b>", global_sf$deaths),
+             icon = NULL) %>%
+  addLegend(position = "bottomright",
+            pal = colorNumeric(palette = "Reds", domain = global_sf$cases),
+            values = ~cases,
+            title = "Cases",
+            labFormat = labelFormat(suffix = " cases"),
+            opacity = 0.5) %>%
+  addLegend(position = "bottomright",
+            pal = colorNumeric(palette = "Blues", domain = global_sf$deaths),
+            values = ~deaths,
+            title = "Deaths",
+            labFormat = labelFormat(suffix = " deaths"),
+            opacity = 0.5)
+```
+
+Let's create time series plot to check how strong the pandemic is.
+
+```{R}
+
+ggplot(global, aes(x = date)) +
+  geom_line(aes(y = cases / 1000, color = "Cases")) +
+  geom_line(aes(y = deaths / 1000, color = "Deaths")) +
+  scale_color_manual(values = c("Cases" = "blue", "Deaths" = "red")) +
+  labs(title = "COVID-19 Cases and Deaths in the World",
+       y = "Number of People, thousand",
+       color = "") +
+  theme_minimal()
+```
+
+Let's do some analysis
+
+It seems cases and deaths have linear correlation.
+
+```{R}
+by_country <- global %>%
+    group_by(country_region) %>%
+    summarize(cases_per_million = sum(cases) / 1000000, 
+              deaths_per_million = sum(deaths) / 1000000)  %>%
+    ungroup()
+
+ggplot(by_country, aes(x = cases_per_million, y = deaths_per_million, label = country_region)) +
+  geom_point(size = 7, shape = 21) +
+  geom_text(size = 2, vjust = -2.5, hjust = 0.5) +
+  xlim(0, max(by_country$cases_per_million) * 1.1) +
+  ylim(0, max(by_country$deaths_per_million) * 1.1)
+```
+
+Make a linear model.
+
+```{R}
+linear_model <- lm(deaths_per_million ~ cases_per_million, data = by_country)
+summary(linear_model)
+```
+
+The model shows a significant positive relationship between deaths per million and cases per million. Specifically, for every one-unit increase in cases per million, deaths per million increase by 0.0134 units on average, holding other variables constant. The coefficient estimate for cases per million is highly significant (p-value \< 2.2e-16), indicating that this relationship is not due to chance.
+
+The R-squared value of 0.8512 indicates that 85.12% of the variation in deaths per million can be explained by cases per million in this model. The adjusted R-squared value of 0.8505 is similar, suggesting that the model is not overfitting the data.
+
+The intercept term in the model is not significant (p-value = 0.697), indicating that the predicted deaths per million is not significantly different from zero when cases per million is zero. However, this may not be a meaningful interpretation of the intercept in this case, since there are likely other factors that contribute to deaths per million besides cases per million.
+
+Overall, this analysis suggests that there is a significant positive relationship between cases per million and deaths per million in the data frame, which is not due to chance. However, it is important to note that this is a correlation analysis and does not necessarily imply causation. Other factors, such as differences in healthcare systems, demographics, and public health policies, could also contribute to the observed relationship.
+
+```{R}
+prediction <- by_country %>%mutate(pred = predict(linear_model))
+ggplot(prediction)+geom_point(aes(x=cases_per_million,
+y = deaths_per_million),color ="red")+
+geom_line(aes(x=cases_per_million,y=pred),color = "orange")
+```
+
+# Bias conclusion
+
+There are some potential sources of bias that could affect the analysis of the COVID-19 data set: Sampling Bias: The data set might only include data from certain countries or regions. This could lead to an overrepresentation of certain areas and an underrepresentation of others, which could skew the results.
+
+Reporting Bias: The data could be biased due to the differences in reporting and testing practices between countries. Some countries might have more reliable or accessible testing facilities, leading to more accurate reporting of cases and deaths, while others might not have the same resources and could underreport.
+
+Population Bias: The demographic composition of the affected population could also affect the data. For example, countries with older populations could have higher mortality rates, and countries with younger populations could have lower mortality rates.
+
+Time Bias: The data could also be affected by changes in testing and reporting practices over time. For example, as testing becomes more widespread, more cases may be detected, leading to an apparent increase in the number of cases, even if the actual prevalence of the virus remains constant.
+
+Media Bias: The way that the media reports on COVID-19 could also affect public perception and the data. For example, sensationalized reports might lead to higher levels of fear and panic, which could lead to increased testing and reporting of cases.
+
+Political Bias: The way that different governments respond to the pandemic could also affect the data. For example, countries that downplay the severity of the virus or are slow to implement social distancing measures may see higher rates of infection and mortality.
+
+It's important to consider these biases when analyzing COVID-19 data and to try to account for them as much as possible to avoid drawing inaccurate conclusions.
+
+# Session info
+
+```{R}
+sessionInfo()
+```
