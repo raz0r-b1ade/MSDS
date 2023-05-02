@@ -1,0 +1,199 @@
+---
+title: "NYPD_Project_RMD"
+author: "Roman N."
+date: "2023-04-21"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+In this Rmd document we're analyzing the shooting project dataset, which can be obtained from the following link: [Shooting Project Dataset](https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD).
+
+# Load Libraries and Import Data
+
+**1. Loading libraries**
+
+```{R}
+library(readr)
+library(dplyr)
+library(ggplot2)
+```
+
+**2. Reading the dataset from CSV file**
+
+```{R}
+data <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+```
+
+# Data Summary
+
+```{R}
+summary(data)
+```
+
+As we can see all of the columns have no correct format. Let's change appropriate variables to factor and date types and getting rid of any columns not needed.
+
+# Convert appropriate variables to factor and date types
+
+```{R}
+data$OCCUR_DATE <- as.Date(data$OCCUR_DATE, format = "%m/%d/%Y")
+data$BORO <- as.factor(data$BORO)
+data$PRECINCT <- as.factor(data$PRECINCT)
+data$LOCATION_DESC <- as.factor(data$LOCATION_DESC)
+data$STATISTICAL_MURDER_FLAG <- as.logical(data$STATISTICAL_MURDER_FLAG)
+data$PERP_AGE_GROUP <- as.factor(data$PERP_AGE_GROUP)
+data$PERP_SEX <- as.factor(data$PERP_SEX)
+data$PERP_RACE <- as.factor(data$PERP_RACE)
+data$VIC_AGE_GROUP <- as.factor(data$VIC_AGE_GROUP)
+data$VIC_SEX <- as.factor(data$VIC_SEX)
+data$VIC_RACE <- as.factor(data$VIC_RACE)
+```
+
+# Remove unnecessary columns
+
+I'm not going to do any geospatial maps and their analysis so I removed those columns.
+
+```{R}
+data <- select(data, -c(OCCUR_TIME, JURISDICTION_CODE, X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_Lat))
+```
+
+# Check for missing data by columns
+
+```{R}
+colSums(is.na(data))
+```
+
+Here we have a problem with missing data. It's obvious that NYPD has no enough information about some crime places or even criminals. All missing values we'll replace with "unknown" or its equivalent.
+
+# Replace missing values
+
+```{R}
+data$LOCATION_DESC <- replace(data$LOCATION_DESC, is.na(data$LOCATION_DESC), "NONE")
+data <- data %>% 
+  mutate(PERP_AGE_GROUP = recode(PERP_AGE_GROUP, "1020" = "UNKNOWN", "224" = "UNKNOWN", "940" = "UNKNOWN"))
+data$PERP_AGE_GROUP <- replace(data$PERP_AGE_GROUP, is.na(data$PERP_AGE_GROUP), "UNKNOWN")
+data$PERP_SEX <- replace(data$PERP_SEX, is.na(data$PERP_SEX), "U")
+data$PERP_RACE <- replace(data$PERP_RACE, is.na(data$PERP_RACE), "UNKNOWN")
+```
+
+# Check wrangling result
+
+```{R}
+colSums(is.na(data))
+summary(data)
+```
+
+Finally we have a cleaned-up dataset to work with.
+
+# Basic visualizations, analysis, linear model
+
+First of all we create several dataframes for analysis.
+
+```{R}
+shooting_by_race_total <- data %>%
+    group_by(VIC_RACE) %>%
+    summarize(TOTAL = n()) %>%
+    ungroup()
+shooting_by_age_group_total <- data %>%
+    group_by(VIC_AGE_GROUP) %>%
+    summarize(TOTAL = n()) %>%
+    ungroup()
+shooting_in_boro_by_race <- data %>% 
+    group_by(BORO, VIC_RACE) %>%
+    summarize(COUNT = n()) %>%
+    ungroup() %>%
+    left_join(shooting_by_race_total, by = "VIC_RACE") %>%
+    mutate(PERCENTAGE = COUNT / TOTAL) %>%
+    select(BORO, VIC_RACE, COUNT, PERCENTAGE) %>%
+    ungroup()
+shooting_in_boro_by_age_group <- data %>% 
+    group_by(BORO, VIC_AGE_GROUP) %>%
+    summarize(COUNT = n()) %>%
+    ungroup() %>%
+    left_join(shooting_by_age_group_total, by = "VIC_AGE_GROUP") %>%
+    mutate(PERCENTAGE = COUNT / TOTAL) %>%
+    select(BORO, VIC_AGE_GROUP, COUNT, PERCENTAGE) %>%
+    ungroup()
+incidents_and_murders_by_boro <- data %>%
+    group_by(BORO) %>%
+    summarize(MURDERS = sum(STATISTICAL_MURDER_FLAG,na.rm='TRUE'), 
+              INCIDENTS = n()) %>%
+    ungroup()
+```
+
+Next we visualize our data. To visualize the data with ggplot, we can use different types of plots depending on the purpose of our analysis. I chose Bar plot, Stacked bar plot and Grouped bar plot.
+
+```{R}
+ggplot(shooting_in_boro_by_race, aes(x = BORO, y = COUNT, fill = VIC_RACE)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = COUNT), position = position_dodge(width = 0.9), vjust = -0.5, size = 2) +
+  labs(title = "Shooting count by race in each borough", x = "Borough", y = "Count") +
+  theme(legend.position = "bottom")
+```
+
+```{R}
+ggplot(shooting_in_boro_by_age_group, aes(x = BORO, y = COUNT, fill = VIC_AGE_GROUP)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Shooting count by age group in each borough", x = "Borough", y = "Count") +
+  theme(legend.position = "bottom")
+```
+
+```{R}
+ggplot(shooting_in_boro_by_race, aes(x = BORO, y = PERCENTAGE, fill = VIC_RACE)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Shooting percentage by race in each borough", x = "Borough", y = "Percentage") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme(legend.position = "bottom")
+```
+
+```{R}
+ggplot(shooting_in_boro_by_age_group, aes(x = BORO, y = PERCENTAGE, fill = VIC_AGE_GROUP)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Shooting percentage by age group in each borough", x = "Borough", y = "Percentage") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme(legend.position = "bottom")
+```
+
+```{R}
+ggplot(incidents_and_murders_by_boro, aes(x = INCIDENTS, y = MURDERS, label = BORO)) +
+  geom_point(size = 7, shape = 21) +
+  geom_text(size = 2, vjust = -2.5, hjust = 0.5) +
+  xlim(0, max(incidents_and_murders_by_boro$INCIDENTS) * 1.1) +
+  ylim(0, max(incidents_and_murders_by_boro$MURDERS) * 1.1)
+```
+
+There is obvious strong linear relation between the shown variables. Here we try to build a linear model between INCIDENTS and MURDERS.
+
+```{R}
+linear_model <- lm(MURDERS ~ INCIDENTS, data = incidents_and_murders_by_boro)
+summary(linear_model)
+```
+
+```{R}
+prediction <-incidents_and_murders_by_boro%>%mutate(pred = predict(linear_model))
+ggplot(prediction)+geom_point(aes(x=INCIDENTS,
+y = MURDERS),color ="red")+
+geom_line(aes(x=INCIDENTS,y=pred),color = "orange")
+```
+
+Our analysis shows us that the most criminal borough in 2006-2021 in New York City is Brooklyn. Unfortunately the most vulnerable race is Black and then Hispanic. People of age 25-44 and 45-64 have been killed more than others. Staten Island is the safest borough.
+
+Obviously there are some reasons for such deviation like tough neighbourhood, tax policy, etc. which can also have impact. Of course for complex analysis it should be investigated carefully.
+
+# Conclusion
+
+There are several sources of bias. For example we can have here Observer bias when those who collected the information could being biased toward certain situations. Or even Recall bias when they asked someone who didn't remember all of the important things.
+
+I had personal bias as overconfidence for this dataset in R. Previously I worked with Python a lot. So I had to open some extra manuals to do that.
+
+# Session info
+
+```{R}
+sessionInfo()
+```
